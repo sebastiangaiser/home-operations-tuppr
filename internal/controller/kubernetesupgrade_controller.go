@@ -17,40 +17,40 @@ limitations under the License.
 package controller
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"maps"
-	"strings"
-	"time"
+    "context"
+    "encoding/json"
+    "fmt"
+    "maps"
+    "strings"
+    "time"
 
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/discovery"
-	"k8s.io/utils/ptr"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+    batchv1 "k8s.io/api/batch/v1"
+    corev1 "k8s.io/api/core/v1"
+    "k8s.io/apimachinery/pkg/api/errors"
+    "k8s.io/apimachinery/pkg/api/resource"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/apimachinery/pkg/runtime"
+    "k8s.io/apimachinery/pkg/types"
+    "k8s.io/client-go/discovery"
+    "k8s.io/utils/ptr"
+    ctrl "sigs.k8s.io/controller-runtime"
+    "sigs.k8s.io/controller-runtime/pkg/client"
+    "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+    "sigs.k8s.io/controller-runtime/pkg/log"
 
-	tupprv1alpha1 "github.com/home-operations/tuppr/api/v1alpha1"
-	"github.com/home-operations/tuppr/internal/constants"
+    tupprv1alpha1 "github.com/home-operations/tuppr/api/v1alpha1"
+    "github.com/home-operations/tuppr/internal/constants"
 )
 
 const (
-	// KubernetesUpgrade-specific constants
-	KubernetesUpgradeFinalizer = "tuppr.home-operations.com/kubernetes-finalizer"
+    // KubernetesUpgrade-specific constants
+    KubernetesUpgradeFinalizer = "tuppr.home-operations.com/kubernetes-finalizer"
 
-	// Job constants for Kubernetes upgrades
-	KubernetesJobBackoffLimit     = 2    // Retry up to 2 times on failure
-	KubernetesJobActiveDeadline   = 3600 // 60 minutes for Kubernetes upgrade
-	KubernetesJobGracePeriod      = 300  // 5 minutes
-	KubernetesJobTTLAfterFinished = 300  // 5 minutes
+    // Job constants for Kubernetes upgrades
+    KubernetesJobBackoffLimit     = 2    // Retry up to 2 times on failure
+    KubernetesJobActiveDeadline   = 3600 // 60 minutes for Kubernetes upgrade
+    KubernetesJobGracePeriod      = 300  // 5 minutes
+    KubernetesJobTTLAfterFinished = 300  // 5 minutes
 )
 
 // +kubebuilder:rbac:groups=tuppr.home-operations.com,resources=kubernetesupgrades,verbs=get;list;watch;create;update;patch;delete
@@ -65,694 +65,694 @@ const (
 
 // KubernetesUpgradeReconciler reconciles a KubernetesUpgrade object
 type KubernetesUpgradeReconciler struct {
-	client.Client
-	Scheme              *runtime.Scheme
-	TalosConfigSecret   string
-	ControllerNamespace string
-	HealthChecker       *HealthChecker
-	TalosClient         *TalosClient
-	MetricsReporter     *MetricsReporter
+    client.Client
+    Scheme              *runtime.Scheme
+    TalosConfigSecret   string
+    ControllerNamespace string
+    HealthChecker       *HealthChecker
+    TalosClient         *TalosClient
+    MetricsReporter     *MetricsReporter
 }
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *KubernetesUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("Starting KubernetesUpgrade reconciliation", "kubernetesupgrade", req.Name)
+    logger := log.FromContext(ctx)
+    logger.Info("Starting KubernetesUpgrade reconciliation", "kubernetesupgrade", req.Name)
 
-	var kubernetesUpgrade tupprv1alpha1.KubernetesUpgrade
-	if err := r.Get(ctx, client.ObjectKey{Name: req.Name}, &kubernetesUpgrade); err != nil {
-		if errors.IsNotFound(err) {
-			logger.V(1).Info("KubernetesUpgrade resource not found, likely deleted")
-		} else {
-			logger.Error(err, "Failed to get KubernetesUpgrade resource")
-		}
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
+    var kubernetesUpgrade tupprv1alpha1.KubernetesUpgrade
+    if err := r.Get(ctx, client.ObjectKey{Name: req.Name}, &kubernetesUpgrade); err != nil {
+        if errors.IsNotFound(err) {
+            logger.V(1).Info("KubernetesUpgrade resource not found, likely deleted")
+        } else {
+            logger.Error(err, "Failed to get KubernetesUpgrade resource")
+        }
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
 
-	// Handle deletion
-	if kubernetesUpgrade.DeletionTimestamp != nil {
-		return r.cleanup(ctx, &kubernetesUpgrade)
-	}
+    // Handle deletion
+    if kubernetesUpgrade.DeletionTimestamp != nil {
+        return r.cleanup(ctx, &kubernetesUpgrade)
+    }
 
-	// Add finalizer
-	if !controllerutil.ContainsFinalizer(&kubernetesUpgrade, KubernetesUpgradeFinalizer) {
-		controllerutil.AddFinalizer(&kubernetesUpgrade, KubernetesUpgradeFinalizer)
-		return ctrl.Result{}, r.Update(ctx, &kubernetesUpgrade)
-	}
+    // Add finalizer
+    if !controllerutil.ContainsFinalizer(&kubernetesUpgrade, KubernetesUpgradeFinalizer) {
+        controllerutil.AddFinalizer(&kubernetesUpgrade, KubernetesUpgradeFinalizer)
+        return ctrl.Result{}, r.Update(ctx, &kubernetesUpgrade)
+    }
 
-	return r.processUpgrade(ctx, &kubernetesUpgrade)
+    return r.processUpgrade(ctx, &kubernetesUpgrade)
 }
 
 // processUpgrade contains the main logic for handling the Kubernetes upgrade process
 func (r *KubernetesUpgradeReconciler) processUpgrade(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade) (ctrl.Result, error) {
-	logger := log.FromContext(ctx).WithValues(
-		"kubernetesupgrade", kubernetesUpgrade.Name,
-		"generation", kubernetesUpgrade.Generation,
-	)
+    logger := log.FromContext(ctx).WithValues(
+        "kubernetesupgrade", kubernetesUpgrade.Name,
+        "generation", kubernetesUpgrade.Generation,
+    )
 
-	logger.V(1).Info("Starting Kubernetes upgrade processing")
+    logger.V(1).Info("Starting Kubernetes upgrade processing")
 
-	// Check for suspend annotation first
-	if suspended, err := r.handleSuspendAnnotation(ctx, kubernetesUpgrade); err != nil || suspended {
-		return ctrl.Result{RequeueAfter: time.Minute * 30}, err
-	}
+    // Check for suspend annotation first
+    if suspended, err := r.handleSuspendAnnotation(ctx, kubernetesUpgrade); err != nil || suspended {
+        return ctrl.Result{RequeueAfter: time.Minute * 30}, err
+    }
 
-	// Check for reset annotation
-	if resetRequested, err := r.handleResetAnnotation(ctx, kubernetesUpgrade); err != nil || resetRequested {
-		return ctrl.Result{RequeueAfter: time.Second * 30}, err
-	}
+    // Check for reset annotation
+    if resetRequested, err := r.handleResetAnnotation(ctx, kubernetesUpgrade); err != nil || resetRequested {
+        return ctrl.Result{RequeueAfter: time.Second * 30}, err
+    }
 
-	// Handle generation changes
-	if reset, err := r.handleGenerationChange(ctx, kubernetesUpgrade); err != nil || reset {
-		return ctrl.Result{RequeueAfter: time.Second * 30}, err
-	}
+    // Handle generation changes
+    if reset, err := r.handleGenerationChange(ctx, kubernetesUpgrade); err != nil || reset {
+        return ctrl.Result{RequeueAfter: time.Second * 30}, err
+    }
 
-	// Skip if already completed/failed
-	if kubernetesUpgrade.Status.Phase == constants.PhaseCompleted || kubernetesUpgrade.Status.Phase == constants.PhaseFailed {
-		logger.V(1).Info("Kubernetes upgrade already completed or failed", "phase", kubernetesUpgrade.Status.Phase)
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-	}
+    // Skip if already completed/failed
+    if kubernetesUpgrade.Status.Phase == constants.PhaseCompleted || kubernetesUpgrade.Status.Phase == constants.PhaseFailed {
+        logger.V(1).Info("Kubernetes upgrade already completed or failed", "phase", kubernetesUpgrade.Status.Phase)
+        return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+    }
 
-	// Coordination check - only when not already InProgress (first-applied wins)
-	if kubernetesUpgrade.Status.Phase != constants.PhaseInProgress {
-		if blocked, message, err := IsAnotherUpgradeActive(ctx, r.Client, "kubernetes"); err != nil {
-			logger.Error(err, "Failed to check for other active upgrades")
-			return ctrl.Result{RequeueAfter: time.Minute}, nil
-		} else if blocked {
-			logger.Info("Blocked by another upgrade", "reason", message)
-			if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhasePending, "", message); err != nil {
-				logger.Error(err, "Failed to update phase for coordination wait")
-			}
-			return ctrl.Result{RequeueAfter: time.Minute * 2}, nil
-		}
-	}
+    // Coordination check - only when not already InProgress (first-applied wins)
+    if kubernetesUpgrade.Status.Phase != constants.PhaseInProgress {
+        if blocked, message, err := IsAnotherUpgradeActive(ctx, r.Client, "kubernetes"); err != nil {
+            logger.Error(err, "Failed to check for other active upgrades")
+            return ctrl.Result{RequeueAfter: time.Minute}, nil
+        } else if blocked {
+            logger.Info("Blocked by another upgrade", "reason", message)
+            if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhasePending, "", message); err != nil {
+                logger.Error(err, "Failed to update phase for coordination wait")
+            }
+            return ctrl.Result{RequeueAfter: time.Minute * 2}, nil
+        }
+    }
 
-	// Continue with existing upgrade logic...
-	if activeJob, err := r.findActiveJob(ctx); err != nil {
-		logger.Error(err, "Failed to find active jobs")
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
-	} else if activeJob != nil {
-		logger.V(1).Info("Found active job, handling its status", "job", activeJob.Name)
-		return r.handleJobStatus(ctx, kubernetesUpgrade, activeJob)
-	}
+    // Continue with existing upgrade logic...
+    if activeJob, err := r.findActiveJob(ctx); err != nil {
+        logger.Error(err, "Failed to find active jobs")
+        return ctrl.Result{RequeueAfter: time.Minute}, nil
+    } else if activeJob != nil {
+        logger.V(1).Info("Found active job, handling its status", "job", activeJob.Name)
+        return r.handleJobStatus(ctx, kubernetesUpgrade, activeJob)
+    }
 
-	// Check version and continue with upgrade logic...
-	currentVersion, err := r.getCurrentKubernetesVersion(ctx)
-	if err != nil {
-		logger.Error(err, "Failed to get current Kubernetes version")
-		if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseFailed, "", fmt.Sprintf("Failed to get current version: %s", err.Error())); err != nil {
-			logger.Error(err, "Failed to update phase for version detection failure")
-		}
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-	}
+    // Check version and continue with upgrade logic...
+    currentVersion, err := r.getCurrentKubernetesVersion(ctx)
+    if err != nil {
+        logger.Error(err, "Failed to get current Kubernetes version")
+        if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseFailed, "", fmt.Sprintf("Failed to get current version: %s", err.Error())); err != nil {
+            logger.Error(err, "Failed to update phase for version detection failure")
+        }
+        return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+    }
 
-	targetVersion := kubernetesUpgrade.Spec.Kubernetes.Version
+    targetVersion := kubernetesUpgrade.Spec.Kubernetes.Version
 
-	if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-		"currentVersion": currentVersion,
-		"targetVersion":  targetVersion,
-	}); err != nil {
-		logger.Error(err, "Failed to update version status")
-	}
+    if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+        "currentVersion": currentVersion,
+        "targetVersion":  targetVersion,
+    }); err != nil {
+        logger.Error(err, "Failed to update version status")
+    }
 
-	if currentVersion == targetVersion {
-		logger.Info("Kubernetes is already at target version", "current", currentVersion, "target", targetVersion)
-		if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseCompleted, "", fmt.Sprintf("Kubernetes already at target version %s", targetVersion)); err != nil {
-			logger.Error(err, "Failed to update completion phase")
-			return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-		}
-		return ctrl.Result{RequeueAfter: time.Hour}, nil
-	}
+    if currentVersion == targetVersion {
+        logger.Info("Kubernetes is already at target version", "current", currentVersion, "target", targetVersion)
+        if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseCompleted, "", fmt.Sprintf("Kubernetes already at target version %s", targetVersion)); err != nil {
+            logger.Error(err, "Failed to update completion phase")
+            return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+        }
+        return ctrl.Result{RequeueAfter: time.Hour}, nil
+    }
 
-	// Add upgrade info to context for health check metrics
-	ctx = context.WithValue(ctx, ContextKeyUpgradeType, UpgradeTypeKubernetes)
-	ctx = context.WithValue(ctx, ContextKeyUpgradeName, kubernetesUpgrade.Name)
+    // Add upgrade info to context for health check metrics
+    ctx = context.WithValue(ctx, ContextKeyUpgradeType, UpgradeTypeKubernetes)
+    ctx = context.WithValue(ctx, ContextKeyUpgradeName, kubernetesUpgrade.Name)
 
-	logger.Info("Kubernetes upgrade needed", "current", currentVersion, "target", targetVersion)
+    logger.Info("Kubernetes upgrade needed", "current", currentVersion, "target", targetVersion)
 
-	if err := r.HealthChecker.CheckHealth(ctx, kubernetesUpgrade.Spec.HealthChecks); err != nil {
-		logger.Info("Health checks failed, will retry", "error", err.Error())
-		if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhasePending, "", fmt.Sprintf("Waiting for health checks: %s", err.Error())); err != nil {
-			logger.Error(err, "Failed to update phase for health check")
-		}
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
-	}
+    if err := r.HealthChecker.CheckHealth(ctx, kubernetesUpgrade.Spec.HealthChecks); err != nil {
+        logger.Info("Health checks failed, will retry", "error", err.Error())
+        if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhasePending, "", fmt.Sprintf("Waiting for health checks: %s", err.Error())); err != nil {
+            logger.Error(err, "Failed to update phase for health check")
+        }
+        return ctrl.Result{RequeueAfter: time.Minute}, nil
+    }
 
-	return r.startUpgrade(ctx, kubernetesUpgrade)
+    return r.startUpgrade(ctx, kubernetesUpgrade)
 }
 
 // handleGenerationChange resets the upgrade if the spec generation has changed
 func (r *KubernetesUpgradeReconciler) handleGenerationChange(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade) (bool, error) {
-	if kubernetesUpgrade.Status.ObservedGeneration >= kubernetesUpgrade.Generation {
-		return false, nil
-	}
+    if kubernetesUpgrade.Status.ObservedGeneration >= kubernetesUpgrade.Generation {
+        return false, nil
+    }
 
-	logger := log.FromContext(ctx)
-	logger.Info("Spec generation changed, resetting Kubernetes upgrade process",
-		"generation", kubernetesUpgrade.Generation,
-		"observed", kubernetesUpgrade.Status.ObservedGeneration,
-		"newVersion", kubernetesUpgrade.Spec.Kubernetes.Version)
+    logger := log.FromContext(ctx)
+    logger.Info("Spec generation changed, resetting Kubernetes upgrade process",
+        "generation", kubernetesUpgrade.Generation,
+        "observed", kubernetesUpgrade.Status.ObservedGeneration,
+        "newVersion", kubernetesUpgrade.Spec.Kubernetes.Version)
 
-	// Reset status for new generation
-	return true, r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-		"phase":          constants.PhasePending,
-		"controllerNode": "",
-		"message":        fmt.Sprintf("Spec updated to %s, restarting upgrade process", kubernetesUpgrade.Spec.Kubernetes.Version),
-		"jobName":        "",
-		"retries":        0,
-		"lastError":      "",
-	})
+    // Reset status for new generation
+    return true, r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+        "phase":          constants.PhasePending,
+        "controllerNode": "",
+        "message":        fmt.Sprintf("Spec updated to %s, restarting upgrade process", kubernetesUpgrade.Spec.Kubernetes.Version),
+        "jobName":        "",
+        "retries":        0,
+        "lastError":      "",
+    })
 }
 
 // handleResetAnnotation checks for the reset annotation and resets the upgrade if found
 func (r *KubernetesUpgradeReconciler) handleResetAnnotation(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade) (bool, error) {
-	if kubernetesUpgrade.Annotations == nil {
-		return false, nil
-	}
+    if kubernetesUpgrade.Annotations == nil {
+        return false, nil
+    }
 
-	resetValue, hasReset := kubernetesUpgrade.Annotations[constants.ResetAnnotation]
-	if !hasReset {
-		return false, nil
-	}
+    resetValue, hasReset := kubernetesUpgrade.Annotations[constants.ResetAnnotation]
+    if !hasReset {
+        return false, nil
+    }
 
-	logger := log.FromContext(ctx)
-	logger.Info("Reset annotation found, clearing Kubernetes upgrade state", "resetValue", resetValue)
+    logger := log.FromContext(ctx)
+    logger.Info("Reset annotation found, clearing Kubernetes upgrade state", "resetValue", resetValue)
 
-	// Remove the reset annotation and reset status
-	newAnnotations := maps.Clone(kubernetesUpgrade.Annotations)
-	maps.DeleteFunc(newAnnotations, func(k, v string) bool {
-		return k == constants.ResetAnnotation
-	})
+    // Remove the reset annotation and reset status
+    newAnnotations := maps.Clone(kubernetesUpgrade.Annotations)
+    maps.DeleteFunc(newAnnotations, func(k, v string) bool {
+        return k == constants.ResetAnnotation
+    })
 
-	// Update both annotations and status
-	kubernetesUpgrade.Annotations = newAnnotations
-	if err := r.Update(ctx, kubernetesUpgrade); err != nil {
-		logger.Error(err, "Failed to remove reset annotation")
-		return false, err
-	}
+    // Update both annotations and status
+    kubernetesUpgrade.Annotations = newAnnotations
+    if err := r.Update(ctx, kubernetesUpgrade); err != nil {
+        logger.Error(err, "Failed to remove reset annotation")
+        return false, err
+    }
 
-	// Reset the status
-	if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-		"phase":          constants.PhasePending,
-		"controllerNode": "",
-		"message":        "Reset requested via annotation",
-		"jobName":        "",
-		"retries":        0,
-		"lastError":      "",
-	}); err != nil {
-		logger.Error(err, "Failed to reset status after annotation")
-		return false, err
-	}
+    // Reset the status
+    if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+        "phase":          constants.PhasePending,
+        "controllerNode": "",
+        "message":        "Reset requested via annotation",
+        "jobName":        "",
+        "retries":        0,
+        "lastError":      "",
+    }); err != nil {
+        logger.Error(err, "Failed to reset status after annotation")
+        return false, err
+    }
 
-	return true, nil
+    return true, nil
 }
 
 // handleSuspendAnnotation checks for the suspend annotation and pauses the controller if found
 func (r *KubernetesUpgradeReconciler) handleSuspendAnnotation(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade) (bool, error) {
-	if kubernetesUpgrade.Annotations == nil {
-		return false, nil
-	}
+    if kubernetesUpgrade.Annotations == nil {
+        return false, nil
+    }
 
-	suspendValue, isSuspended := kubernetesUpgrade.Annotations[constants.SuspendAnnotation]
-	if !isSuspended {
-		return false, nil
-	}
+    suspendValue, isSuspended := kubernetesUpgrade.Annotations[constants.SuspendAnnotation]
+    if !isSuspended {
+        return false, nil
+    }
 
-	logger := log.FromContext(ctx)
-	logger.Info("Suspend annotation found, controller is suspended",
-		"suspendValue", suspendValue,
-		"kubernetesupgrade", kubernetesUpgrade.Name)
+    logger := log.FromContext(ctx)
+    logger.Info("Suspend annotation found, controller is suspended",
+        "suspendValue", suspendValue,
+        "kubernetesupgrade", kubernetesUpgrade.Name)
 
-	// Update status to indicate suspension
-	message := fmt.Sprintf("Controller suspended via annotation (value: %s) - remove annotation to resume", suspendValue)
-	if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhasePending, "", message); err != nil {
-		logger.Error(err, "Failed to update phase for suspension")
-		return true, err
-	}
+    // Update status to indicate suspension
+    message := fmt.Sprintf("Controller suspended via annotation (value: %s) - remove annotation to resume", suspendValue)
+    if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhasePending, "", message); err != nil {
+        logger.Error(err, "Failed to update phase for suspension")
+        return true, err
+    }
 
-	logger.V(1).Info("Controller suspended, no further processing will occur",
-		"kubernetesupgrade", kubernetesUpgrade.Name,
-		"suspendValue", suspendValue)
+    logger.V(1).Info("Controller suspended, no further processing will occur",
+        "kubernetesupgrade", kubernetesUpgrade.Name,
+        "suspendValue", suspendValue)
 
-	return true, nil // Return true to indicate we should stop processing
+    return true, nil // Return true to indicate we should stop processing
 }
 
 // getCurrentKubernetesVersion gets the current Kubernetes version from the cluster
 func (r *KubernetesUpgradeReconciler) getCurrentKubernetesVersion(ctx context.Context) (string, error) {
-	// Use the existing REST config from the manager instead of ctrl.GetConfigOrDie()
-	config, err := ctrl.GetConfig()
-	if err != nil {
-		return "", fmt.Errorf("failed to get REST config: %w", err)
-	}
+    // Use the existing REST config from the manager instead of ctrl.GetConfigOrDie()
+    config, err := ctrl.GetConfig()
+    if err != nil {
+        return "", fmt.Errorf("failed to get REST config: %w", err)
+    }
 
-	// Create discovery client
-	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
-	if err != nil {
-		return "", fmt.Errorf("failed to create discovery client: %w", err)
-	}
+    // Create discovery client
+    discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
+    if err != nil {
+        return "", fmt.Errorf("failed to create discovery client: %w", err)
+    }
 
-	// Check if context is cancelled before making the call
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	default:
-	}
+    // Check if context is cancelled before making the call
+    select {
+    case <-ctx.Done():
+        return "", ctx.Err()
+    default:
+    }
 
-	// Get server version
-	serverVersion, err := discoveryClient.ServerVersion()
-	if err != nil {
-		return "", fmt.Errorf("failed to get server version: %w", err)
-	}
+    // Get server version
+    serverVersion, err := discoveryClient.ServerVersion()
+    if err != nil {
+        return "", fmt.Errorf("failed to get server version: %w", err)
+    }
 
-	// Return version in format that matches our spec (with 'v' prefix)
-	version := serverVersion.GitVersion
-	if !strings.HasPrefix(version, "v") {
-		version = "v" + version
-	}
+    // Return version in format that matches our spec (with 'v' prefix)
+    version := serverVersion.GitVersion
+    if !strings.HasPrefix(version, "v") {
+        version = "v" + version
+    }
 
-	return version, nil
+    return version, nil
 }
 
 // findControllerNode finds the first available controller node
 func (r *KubernetesUpgradeReconciler) findControllerNode(ctx context.Context) (string, string, error) {
-	nodeList := &corev1.NodeList{}
-	if err := r.List(ctx, nodeList); err != nil {
-		return "", "", fmt.Errorf("failed to list nodes: %w", err)
-	}
+    nodeList := &corev1.NodeList{}
+    if err := r.List(ctx, nodeList); err != nil {
+        return "", "", fmt.Errorf("failed to list nodes: %w", err)
+    }
 
-	// Find first controller node
-	for _, node := range nodeList.Items {
-		if _, isController := node.Labels["node-role.kubernetes.io/control-plane"]; isController {
-			nodeIP, err := GetNodeInternalIP(&node)
-			if err != nil {
-				continue // Try next controller node
-			}
-			return node.Name, nodeIP, nil
-		}
-	}
+    // Find first controller node
+    for _, node := range nodeList.Items {
+        if _, isController := node.Labels["node-role.kubernetes.io/control-plane"]; isController {
+            nodeIP, err := GetNodeInternalIP(&node)
+            if err != nil {
+                continue // Try next controller node
+            }
+            return node.Name, nodeIP, nil
+        }
+    }
 
-	return "", "", fmt.Errorf("no controller node found with node-role.kubernetes.io/control-plane label")
+    return "", "", fmt.Errorf("no controller node found with node-role.kubernetes.io/control-plane label")
 }
 
 // startUpgrade creates a job to upgrade Kubernetes
 func (r *KubernetesUpgradeReconciler) startUpgrade(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+    logger := log.FromContext(ctx)
 
-	controllerNode, controllerIP, err := r.findControllerNode(ctx)
-	if err != nil {
-		logger.Error(err, "Failed to find controller node")
-		if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseFailed, "", fmt.Sprintf("Failed to find controller node: %s", err.Error())); err != nil {
-			logger.Error(err, "Failed to update phase for controller node failure")
-		}
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
-	}
+    controllerNode, controllerIP, err := r.findControllerNode(ctx)
+    if err != nil {
+        logger.Error(err, "Failed to find controller node")
+        if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseFailed, "", fmt.Sprintf("Failed to find controller node: %s", err.Error())); err != nil {
+            logger.Error(err, "Failed to update phase for controller node failure")
+        }
+        return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+    }
 
-	logger.Info("Starting Kubernetes upgrade", "controllerNode", controllerNode, "controllerIP", controllerIP)
+    logger.Info("Starting Kubernetes upgrade", "controllerNode", controllerNode, "controllerIP", controllerIP)
 
-	job, err := r.createJob(ctx, kubernetesUpgrade, controllerNode, controllerIP)
-	if err != nil {
-		logger.Error(err, "Failed to create Kubernetes upgrade job")
-		if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseFailed, controllerNode, fmt.Sprintf("Failed to create job: %s", err.Error())); err != nil {
-			logger.Error(err, "Failed to update phase for job creation failure")
-		}
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
-	}
+    job, err := r.createJob(ctx, kubernetesUpgrade, controllerNode, controllerIP)
+    if err != nil {
+        logger.Error(err, "Failed to create Kubernetes upgrade job")
+        if err := r.setPhase(ctx, kubernetesUpgrade, constants.PhaseFailed, controllerNode, fmt.Sprintf("Failed to create job: %s", err.Error())); err != nil {
+            logger.Error(err, "Failed to update phase for job creation failure")
+        }
+        return ctrl.Result{RequeueAfter: time.Minute}, nil
+    }
 
-	logger.Info("Successfully created Kubernetes upgrade job", "job", job.Name, "controllerNode", controllerNode)
+    logger.Info("Successfully created Kubernetes upgrade job", "job", job.Name, "controllerNode", controllerNode)
 
-	// Update status with job info
-	if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-		"phase":          constants.PhaseInProgress,
-		"controllerNode": controllerNode,
-		"jobName":        job.Name,
-		"message":        fmt.Sprintf("Upgrading Kubernetes to %s on controller node %s", kubernetesUpgrade.Spec.Kubernetes.Version, controllerNode),
-	}); err != nil {
-		logger.Error(err, "Failed to update status for job creation")
-		return ctrl.Result{RequeueAfter: time.Second * 30}, err
-	}
+    // Update status with job info
+    if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+        "phase":          constants.PhaseInProgress,
+        "controllerNode": controllerNode,
+        "jobName":        job.Name,
+        "message":        fmt.Sprintf("Upgrading Kubernetes to %s on controller node %s", kubernetesUpgrade.Spec.Kubernetes.Version, controllerNode),
+    }); err != nil {
+        logger.Error(err, "Failed to update status for job creation")
+        return ctrl.Result{RequeueAfter: time.Second * 30}, err
+    }
 
-	return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+    return ctrl.Result{RequeueAfter: time.Second * 30}, nil
 }
 
 // createJob creates a Kubernetes Job to perform the Kubernetes upgrade
 func (r *KubernetesUpgradeReconciler) createJob(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade, controllerNode, controllerIP string) (*batchv1.Job, error) {
-	logger := log.FromContext(ctx)
+    logger := log.FromContext(ctx)
 
-	job := r.buildJob(ctx, kubernetesUpgrade, controllerNode, controllerIP)
-	if err := controllerutil.SetControllerReference(kubernetesUpgrade, job, r.Scheme); err != nil {
-		return nil, fmt.Errorf("failed to set controller reference: %w", err)
-	}
+    job := r.buildJob(ctx, kubernetesUpgrade, controllerNode, controllerIP)
+    if err := controllerutil.SetControllerReference(kubernetesUpgrade, job, r.Scheme); err != nil {
+        return nil, fmt.Errorf("failed to set controller reference: %w", err)
+    }
 
-	logger.V(1).Info("Creating Kubernetes upgrade job", "job", job.Name, "controllerNode", controllerNode)
+    logger.V(1).Info("Creating Kubernetes upgrade job", "job", job.Name, "controllerNode", controllerNode)
 
-	if err := r.Create(ctx, job); err != nil {
-		if errors.IsAlreadyExists(err) {
-			// Job already exists, just return it
-			existingJob := &batchv1.Job{}
-			if getErr := r.Get(ctx, types.NamespacedName{Name: job.Name, Namespace: job.Namespace}, existingJob); getErr != nil {
-				return nil, fmt.Errorf("failed to get existing job: %w", getErr)
-			}
-			logger.V(1).Info("Kubernetes upgrade job already exists, reusing", "job", job.Name)
-			return existingJob, nil
-		}
-		return nil, fmt.Errorf("failed to create job: %w", err)
-	}
+    if err := r.Create(ctx, job); err != nil {
+        if errors.IsAlreadyExists(err) {
+            // Job already exists, just return it
+            existingJob := &batchv1.Job{}
+            if getErr := r.Get(ctx, types.NamespacedName{Name: job.Name, Namespace: job.Namespace}, existingJob); getErr != nil {
+                return nil, fmt.Errorf("failed to get existing job: %w", getErr)
+            }
+            logger.V(1).Info("Kubernetes upgrade job already exists, reusing", "job", job.Name)
+            return existingJob, nil
+        }
+        return nil, fmt.Errorf("failed to create job: %w", err)
+    }
 
-	return job, nil
+    return job, nil
 }
 
 // buildJob constructs a Kubernetes Job object for upgrading Kubernetes
 func (r *KubernetesUpgradeReconciler) buildJob(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade, controllerNode, controllerIP string) *batchv1.Job {
-	logger := log.FromContext(ctx)
+    logger := log.FromContext(ctx)
 
-	jobName := GenerateSafeJobName(kubernetesUpgrade.Name, controllerNode)
+    jobName := GenerateSafeJobName(kubernetesUpgrade.Name, controllerNode)
 
-	labels := map[string]string{
-		"app.kubernetes.io/name":                "kubernetes-upgrade",
-		"app.kubernetes.io/instance":            kubernetesUpgrade.Name,
-		"app.kubernetes.io/part-of":             "tuppr",
-		"tuppr.home-operations.com/target-node": controllerNode,
-	}
+    labels := map[string]string{
+        "app.kubernetes.io/name":                "kubernetes-upgrade",
+        "app.kubernetes.io/instance":            kubernetesUpgrade.Name,
+        "app.kubernetes.io/part-of":             "tuppr",
+        "tuppr.home-operations.com/target-node": controllerNode,
+    }
 
-	// Get talosctl image with defaults
-	talosctlRepo := constants.DefaultTalosctlImage
-	if kubernetesUpgrade.Spec.Talosctl.Image.Repository != "" {
-		talosctlRepo = kubernetesUpgrade.Spec.Talosctl.Image.Repository
-	}
+    // Get talosctl image with defaults
+    talosctlRepo := constants.DefaultTalosctlImage
+    if kubernetesUpgrade.Spec.Talosctl.Image.Repository != "" {
+        talosctlRepo = kubernetesUpgrade.Spec.Talosctl.Image.Repository
+    }
 
-	talosctlTag := kubernetesUpgrade.Spec.Talosctl.Image.Tag
-	if talosctlTag == "" {
-		// Try to detect the current Talos version for talosctl compatibility
-		if currentVersion, err := r.TalosClient.GetNodeVersion(ctx, controllerIP); err == nil && currentVersion != "" {
-			talosctlTag = currentVersion
-			logger.V(1).Info("Using current node version for talosctl compatibility",
-				"node", controllerNode, "currentVersion", currentVersion)
-		} else {
-			// This should never happen but lets fallback to 'latest' just in case
-			talosctlTag = constants.DefaultTalosctlTag
-			logger.V(1).Info("Could not detect current version, using fallback version for talosctl",
-				"node", controllerNode, "version", talosctlTag, "error", err)
-		}
-	}
+    talosctlTag := kubernetesUpgrade.Spec.Talosctl.Image.Tag
+    if talosctlTag == "" {
+        // Try to detect the current Talos version for talosctl compatibility
+        if currentVersion, err := r.TalosClient.GetNodeVersion(ctx, controllerIP); err == nil && currentVersion != "" {
+            talosctlTag = currentVersion
+            logger.V(1).Info("Using current node version for talosctl compatibility",
+                "node", controllerNode, "currentVersion", currentVersion)
+        } else {
+            // This should never happen but lets fallback to 'latest' just in case
+            talosctlTag = constants.DefaultTalosctlTag
+            logger.V(1).Info("Could not detect current version, using fallback version for talosctl",
+                "node", controllerNode, "version", talosctlTag, "error", err)
+        }
+    }
 
-	talosctlImage := talosctlRepo + ":" + talosctlTag
+    talosctlImage := talosctlRepo + ":" + talosctlTag
 
-	// Build upgrade arguments
-	args := []string{
-		"upgrade-k8s",
-		"--nodes=" + controllerIP,
-		"--to=" + kubernetesUpgrade.Spec.Kubernetes.Version,
-	}
+    // Build upgrade arguments
+    args := []string{
+        "upgrade-k8s",
+        "--nodes=" + controllerIP,
+        "--to=" + kubernetesUpgrade.Spec.Kubernetes.Version,
+    }
 
-	pullPolicy := corev1.PullIfNotPresent
-	if kubernetesUpgrade.Spec.Talosctl.Image.PullPolicy != "" {
-		pullPolicy = kubernetesUpgrade.Spec.Talosctl.Image.PullPolicy
-	}
+    pullPolicy := corev1.PullIfNotPresent
+    if kubernetesUpgrade.Spec.Talosctl.Image.PullPolicy != "" {
+        pullPolicy = kubernetesUpgrade.Spec.Talosctl.Image.PullPolicy
+    }
 
-	logger.V(1).Info("Building Kubernetes upgrade job specification",
-		"controllerNode", controllerNode,
-		"talosctlImage", talosctlImage,
-		"pullPolicy", pullPolicy,
-		"args", args)
+    logger.V(1).Info("Building Kubernetes upgrade job specification",
+        "controllerNode", controllerNode,
+        "talosctlImage", talosctlImage,
+        "pullPolicy", pullPolicy,
+        "args", args)
 
-	return &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      jobName,
-			Namespace: r.ControllerNamespace,
-			Labels:    labels,
-		},
-		Spec: batchv1.JobSpec{
-			BackoffLimit:            ptr.To(int32(KubernetesJobBackoffLimit)),
-			Completions:             ptr.To(int32(1)),
-			TTLSecondsAfterFinished: ptr.To(int32(KubernetesJobTTLAfterFinished)),
-			Parallelism:             ptr.To(int32(1)),
-			ActiveDeadlineSeconds:   ptr.To(int64(KubernetesJobActiveDeadline)),
-			PodReplacementPolicy:    ptr.To(batchv1.Failed),
-			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{
-					RestartPolicy:                 corev1.RestartPolicyNever,
-					TerminationGracePeriodSeconds: ptr.To(int64(KubernetesJobGracePeriod)),
-					PriorityClassName:             "system-node-critical",
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: ptr.To(true),
-						RunAsUser:    ptr.To(int64(65532)),
-						RunAsGroup:   ptr.To(int64(65532)),
-						FSGroup:      ptr.To(int64(65532)),
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-					},
-					Tolerations: []corev1.Toleration{
-						{
-							Operator: corev1.TolerationOpExists,
-						},
-					},
-					Containers: []corev1.Container{{
-						Name:            "upgrade-k8s",
-						Image:           talosctlImage,
-						ImagePullPolicy: pullPolicy,
-						Args:            args,
-						Env: []corev1.EnvVar{{
-							Name:  "TALOSCONFIG",
-							Value: "/var/run/secrets/talos.dev/talosconfig",
-						}},
-						SecurityContext: &corev1.SecurityContext{
-							AllowPrivilegeEscalation: ptr.To(false),
-							ReadOnlyRootFilesystem:   ptr.To(true),
-							Capabilities: &corev1.Capabilities{
-								Drop: []corev1.Capability{"ALL"},
-							},
-						},
-						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("10m"),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
-							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse("512Mi"),
-							},
-						},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      constants.TalosSecretName,
-							MountPath: "/var/run/secrets/talos.dev",
-							ReadOnly:  true,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: constants.TalosSecretName,
-						VolumeSource: corev1.VolumeSource{
-							Secret: &corev1.SecretVolumeSource{
-								SecretName:  r.TalosConfigSecret,
-								DefaultMode: ptr.To(int32(0420)),
-							},
-						},
-					}},
-				},
-			},
-		},
-	}
+    return &batchv1.Job{
+        ObjectMeta: metav1.ObjectMeta{
+            Name:      jobName,
+            Namespace: r.ControllerNamespace,
+            Labels:    labels,
+        },
+        Spec: batchv1.JobSpec{
+            BackoffLimit:            ptr.To(int32(KubernetesJobBackoffLimit)),
+            Completions:             ptr.To(int32(1)),
+            TTLSecondsAfterFinished: ptr.To(int32(KubernetesJobTTLAfterFinished)),
+            Parallelism:             ptr.To(int32(1)),
+            ActiveDeadlineSeconds:   ptr.To(int64(KubernetesJobActiveDeadline)),
+            PodReplacementPolicy:    ptr.To(batchv1.Failed),
+            Template: corev1.PodTemplateSpec{
+                Spec: corev1.PodSpec{
+                    RestartPolicy:                 corev1.RestartPolicyNever,
+                    TerminationGracePeriodSeconds: ptr.To(int64(KubernetesJobGracePeriod)),
+                    PriorityClassName:             "system-node-critical",
+                    SecurityContext: &corev1.PodSecurityContext{
+                        RunAsNonRoot: ptr.To(true),
+                        RunAsUser:    ptr.To(int64(65532)),
+                        RunAsGroup:   ptr.To(int64(65532)),
+                        FSGroup:      ptr.To(int64(65532)),
+                        SeccompProfile: &corev1.SeccompProfile{
+                            Type: corev1.SeccompProfileTypeRuntimeDefault,
+                        },
+                    },
+                    Tolerations: []corev1.Toleration{
+                        {
+                            Operator: corev1.TolerationOpExists,
+                        },
+                    },
+                    Containers: []corev1.Container{{
+                        Name:            "upgrade-k8s",
+                        Image:           talosctlImage,
+                        ImagePullPolicy: pullPolicy,
+                        Args:            args,
+                        Env: []corev1.EnvVar{{
+                            Name:  "TALOSCONFIG",
+                            Value: "/var/run/secrets/talos.dev/talosconfig",
+                        }},
+                        SecurityContext: &corev1.SecurityContext{
+                            AllowPrivilegeEscalation: ptr.To(false),
+                            ReadOnlyRootFilesystem:   ptr.To(true),
+                            Capabilities: &corev1.Capabilities{
+                                Drop: []corev1.Capability{"ALL"},
+                            },
+                        },
+                        Resources: corev1.ResourceRequirements{
+                            Requests: corev1.ResourceList{
+                                corev1.ResourceCPU:    resource.MustParse("10m"),
+                                corev1.ResourceMemory: resource.MustParse("64Mi"),
+                            },
+                            Limits: corev1.ResourceList{
+                                corev1.ResourceMemory: resource.MustParse("512Mi"),
+                            },
+                        },
+                        VolumeMounts: []corev1.VolumeMount{{
+                            Name:      constants.TalosSecretName,
+                            MountPath: "/var/run/secrets/talos.dev",
+                            ReadOnly:  true,
+                        }},
+                    }},
+                    Volumes: []corev1.Volume{{
+                        Name: constants.TalosSecretName,
+                        VolumeSource: corev1.VolumeSource{
+                            Secret: &corev1.SecretVolumeSource{
+                                SecretName:  r.TalosConfigSecret,
+                                DefaultMode: ptr.To(int32(0420)),
+                            },
+                        },
+                    }},
+                },
+            },
+        },
+    }
 }
 
 // findActiveJob looks for any currently running job for this KubernetesUpgrade
 func (r *KubernetesUpgradeReconciler) findActiveJob(ctx context.Context) (*batchv1.Job, error) {
-	jobList := &batchv1.JobList{}
-	if err := r.List(ctx, jobList,
-		client.InNamespace(r.ControllerNamespace),
-		client.MatchingLabels{
-			"app.kubernetes.io/name": "kubernetes-upgrade",
-		}); err != nil {
-		return nil, err
-	}
+    jobList := &batchv1.JobList{}
+    if err := r.List(ctx, jobList,
+        client.InNamespace(r.ControllerNamespace),
+        client.MatchingLabels{
+            "app.kubernetes.io/name": "kubernetes-upgrade",
+        }); err != nil {
+        return nil, err
+    }
 
-	// Return the first job we find - there should only be one since there's only one CR
-	for _, job := range jobList.Items {
-		return &job, nil
-	}
+    // Return the first job we find - there should only be one since there's only one CR
+    for _, job := range jobList.Items {
+        return &job, nil
+    }
 
-	return nil, nil
+    return nil, nil
 }
 
 // handleJobStatus processes the status of an active Kubernetes upgrade job
 func (r *KubernetesUpgradeReconciler) handleJobStatus(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade, job *batchv1.Job) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+    logger := log.FromContext(ctx)
 
-	logger.V(1).Info("Handling Kubernetes job status",
-		"job", job.Name,
-		"active", job.Status.Active,
-		"succeeded", job.Status.Succeeded,
-		"failed", job.Status.Failed,
-		"backoffLimit", *job.Spec.BackoffLimit)
+    logger.V(1).Info("Handling Kubernetes job status",
+        "job", job.Name,
+        "active", job.Status.Active,
+        "succeeded", job.Status.Succeeded,
+        "failed", job.Status.Failed,
+        "backoffLimit", *job.Spec.BackoffLimit)
 
-	// Job still running
-	if job.Status.Succeeded == 0 && (job.Status.Failed == 0 || job.Status.Failed < *job.Spec.BackoffLimit) {
-		message := fmt.Sprintf("Upgrading Kubernetes to %s (job: %s)", kubernetesUpgrade.Spec.Kubernetes.Version, job.Name)
-		if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-			"phase":   constants.PhaseInProgress,
-			"message": message,
-			"jobName": job.Name,
-		}); err != nil {
-			logger.Error(err, "Failed to update phase for active job", "job", job.Name)
-			return ctrl.Result{RequeueAfter: time.Second * 30}, err
-		}
-		logger.V(1).Info("Kubernetes upgrade job is still active", "job", job.Name)
-		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
-	}
+    // Job still running
+    if job.Status.Succeeded == 0 && (job.Status.Failed == 0 || job.Status.Failed < *job.Spec.BackoffLimit) {
+        message := fmt.Sprintf("Upgrading Kubernetes to %s (job: %s)", kubernetesUpgrade.Spec.Kubernetes.Version, job.Name)
+        if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+            "phase":   constants.PhaseInProgress,
+            "message": message,
+            "jobName": job.Name,
+        }); err != nil {
+            logger.Error(err, "Failed to update phase for active job", "job", job.Name)
+            return ctrl.Result{RequeueAfter: time.Second * 30}, err
+        }
+        logger.V(1).Info("Kubernetes upgrade job is still active", "job", job.Name)
+        return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+    }
 
-	// Job succeeded - verify upgrade
-	if job.Status.Succeeded > 0 {
-		return r.handleJobSuccess(ctx, kubernetesUpgrade, job)
-	}
+    // Job succeeded - verify upgrade
+    if job.Status.Succeeded > 0 {
+        return r.handleJobSuccess(ctx, kubernetesUpgrade, job)
+    }
 
-	// Job failed permanently
-	return r.handleJobFailure(ctx, kubernetesUpgrade, job)
+    // Job failed permanently
+    return r.handleJobFailure(ctx, kubernetesUpgrade, job)
 }
 
 // handleJobSuccess verifies the upgrade and marks it as completed
 func (r *KubernetesUpgradeReconciler) handleJobSuccess(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade, job *batchv1.Job) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("Kubernetes upgrade job completed successfully", "job", job.Name)
+    logger := log.FromContext(ctx)
+    logger.Info("Kubernetes upgrade job completed successfully", "job", job.Name)
 
-	// Verify the upgrade worked by checking the current version
-	currentVersion, err := r.getCurrentKubernetesVersion(ctx)
-	if err != nil {
-		logger.Error(err, "Failed to verify Kubernetes upgrade")
-		return r.handleJobFailure(ctx, kubernetesUpgrade, job)
-	}
+    // Verify the upgrade worked by checking the current version
+    currentVersion, err := r.getCurrentKubernetesVersion(ctx)
+    if err != nil {
+        logger.Error(err, "Failed to verify Kubernetes upgrade")
+        return r.handleJobFailure(ctx, kubernetesUpgrade, job)
+    }
 
-	targetVersion := kubernetesUpgrade.Spec.Kubernetes.Version
-	if currentVersion != targetVersion {
-		logger.Error(fmt.Errorf("version mismatch after upgrade"), "Kubernetes upgrade verification failed",
-			"current", currentVersion, "target", targetVersion)
-		return r.handleJobFailure(ctx, kubernetesUpgrade, job)
-	}
+    targetVersion := kubernetesUpgrade.Spec.Kubernetes.Version
+    if currentVersion != targetVersion {
+        logger.Error(fmt.Errorf("version mismatch after upgrade"), "Kubernetes upgrade verification failed",
+            "current", currentVersion, "target", targetVersion)
+        return r.handleJobFailure(ctx, kubernetesUpgrade, job)
+    }
 
-	// Clean up the successful job immediately
-	if err := r.cleanupJob(ctx, job); err != nil {
-		logger.Error(err, "Failed to cleanup job, but continuing", "job", job.Name)
-	}
+    // Clean up the successful job immediately
+    if err := r.cleanupJob(ctx, job); err != nil {
+        logger.Error(err, "Failed to cleanup job, but continuing", "job", job.Name)
+    }
 
-	// Update status to completed
-	if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-		"phase":          constants.PhaseCompleted,
-		"currentVersion": currentVersion,
-		"message":        fmt.Sprintf("Successfully upgraded Kubernetes to %s", currentVersion),
-		"jobName":        "",
-	}); err != nil {
-		logger.Error(err, "Failed to update completion status")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-	}
+    // Update status to completed
+    if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+        "phase":          constants.PhaseCompleted,
+        "currentVersion": currentVersion,
+        "message":        fmt.Sprintf("Successfully upgraded Kubernetes to %s", currentVersion),
+        "jobName":        "",
+    }); err != nil {
+        logger.Error(err, "Failed to update completion status")
+        return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+    }
 
-	logger.Info("Successfully completed Kubernetes upgrade and cleaned up job", "version", currentVersion)
-	return ctrl.Result{RequeueAfter: time.Hour}, nil // Check again in an hour
+    logger.Info("Successfully completed Kubernetes upgrade and cleaned up job", "version", currentVersion)
+    return ctrl.Result{RequeueAfter: time.Hour}, nil // Check again in an hour
 }
 
 // handleJobFailure marks the upgrade as failed
 func (r *KubernetesUpgradeReconciler) handleJobFailure(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade, job *batchv1.Job) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("Kubernetes upgrade job failed permanently", "job", job.Name)
+    logger := log.FromContext(ctx)
+    logger.Info("Kubernetes upgrade job failed permanently", "job", job.Name)
 
-	if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-		"phase":     constants.PhaseFailed,
-		"message":   "Kubernetes upgrade job failed permanently",
-		"lastError": "Job failed permanently",
-		"jobName":   job.Name,
-	}); err != nil {
-		logger.Error(err, "Failed to update failure status")
-		return ctrl.Result{RequeueAfter: time.Minute * 5}, err
-	}
+    if err := r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+        "phase":     constants.PhaseFailed,
+        "message":   "Kubernetes upgrade job failed permanently",
+        "lastError": "Job failed permanently",
+        "jobName":   job.Name,
+    }); err != nil {
+        logger.Error(err, "Failed to update failure status")
+        return ctrl.Result{RequeueAfter: time.Minute * 5}, err
+    }
 
-	logger.Info("Successfully marked Kubernetes upgrade as failed")
-	return ctrl.Result{RequeueAfter: time.Minute * 10}, nil
+    logger.Info("Successfully marked Kubernetes upgrade as failed")
+    return ctrl.Result{RequeueAfter: time.Minute * 10}, nil
 }
 
 // cleanupJob removes the job after successful completion
 func (r *KubernetesUpgradeReconciler) cleanupJob(ctx context.Context, job *batchv1.Job) error {
-	logger := log.FromContext(ctx)
-	logger.Info("Deleting successful Kubernetes upgrade job and its pods", "job", job.Name)
+    logger := log.FromContext(ctx)
+    logger.Info("Deleting successful Kubernetes upgrade job and its pods", "job", job.Name)
 
-	// Use foreground deletion to ensure pods are cleaned up
-	deletePolicy := metav1.DeletePropagationForeground
-	if err := r.Delete(ctx, job, &client.DeleteOptions{
-		PropagationPolicy: &deletePolicy,
-	}); err != nil && !errors.IsNotFound(err) {
-		logger.Error(err, "Failed to delete successful job", "job", job.Name)
-		return err
-	}
+    // Use foreground deletion to ensure pods are cleaned up
+    deletePolicy := metav1.DeletePropagationForeground
+    if err := r.Delete(ctx, job, &client.DeleteOptions{
+        PropagationPolicy: &deletePolicy,
+    }); err != nil && !errors.IsNotFound(err) {
+        logger.Error(err, "Failed to delete successful job", "job", job.Name)
+        return err
+    }
 
-	return nil
+    return nil
 }
 
 // cleanup handles finalization logic when a KubernetesUpgrade is deleted
 func (r *KubernetesUpgradeReconciler) cleanup(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-	logger.Info("Cleaning up KubernetesUpgrade", "name", kubernetesUpgrade.Name)
+    logger := log.FromContext(ctx)
+    logger.Info("Cleaning up KubernetesUpgrade", "name", kubernetesUpgrade.Name)
 
-	// Jobs will be cleaned up automatically via owner references
-	logger.V(1).Info("Removing finalizer", "name", kubernetesUpgrade.Name, "finalizer", KubernetesUpgradeFinalizer)
-	controllerutil.RemoveFinalizer(kubernetesUpgrade, KubernetesUpgradeFinalizer)
+    // Jobs will be cleaned up automatically via owner references
+    logger.V(1).Info("Removing finalizer", "name", kubernetesUpgrade.Name, "finalizer", KubernetesUpgradeFinalizer)
+    controllerutil.RemoveFinalizer(kubernetesUpgrade, KubernetesUpgradeFinalizer)
 
-	if err := r.Update(ctx, kubernetesUpgrade); err != nil {
-		logger.Error(err, "Failed to remove finalizer", "name", kubernetesUpgrade.Name)
-		return ctrl.Result{}, err
-	}
+    if err := r.Update(ctx, kubernetesUpgrade); err != nil {
+        logger.Error(err, "Failed to remove finalizer", "name", kubernetesUpgrade.Name)
+        return ctrl.Result{}, err
+    }
 
-	logger.Info("Successfully cleaned up KubernetesUpgrade", "name", kubernetesUpgrade.Name)
-	return ctrl.Result{}, nil
+    logger.Info("Successfully cleaned up KubernetesUpgrade", "name", kubernetesUpgrade.Name)
+    return ctrl.Result{}, nil
 }
 
 // updateStatus applies a partial update to the status subresource
 func (r *KubernetesUpgradeReconciler) updateStatus(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade, updates map[string]any) error {
-	logger := log.FromContext(ctx)
+    logger := log.FromContext(ctx)
 
-	// Always include generation and timestamp
-	updates["observedGeneration"] = kubernetesUpgrade.Generation
-	updates["lastUpdated"] = metav1.Now()
+    // Always include generation and timestamp
+    updates["observedGeneration"] = kubernetesUpgrade.Generation
+    updates["lastUpdated"] = metav1.Now()
 
-	patch := map[string]any{
-		"status": updates,
-	}
+    patch := map[string]any{
+        "status": updates,
+    }
 
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		return fmt.Errorf("failed to marshal patch: %w", err)
-	}
+    patchBytes, err := json.Marshal(patch)
+    if err != nil {
+        return fmt.Errorf("failed to marshal patch: %w", err)
+    }
 
-	logger.V(1).Info("Applying Kubernetes status patch", "patch", string(patchBytes))
+    logger.V(1).Info("Applying Kubernetes status patch", "patch", string(patchBytes))
 
-	statusObj := &tupprv1alpha1.KubernetesUpgrade{}
-	statusObj.Name = kubernetesUpgrade.Name
+    statusObj := &tupprv1alpha1.KubernetesUpgrade{}
+    statusObj.Name = kubernetesUpgrade.Name
 
-	return r.Status().Patch(ctx, statusObj, client.RawPatch(types.MergePatchType, patchBytes))
+    return r.Status().Patch(ctx, statusObj, client.RawPatch(types.MergePatchType, patchBytes))
 }
 
 // setPhase updates the phase, controller node, and message in status
 func (r *KubernetesUpgradeReconciler) setPhase(ctx context.Context, kubernetesUpgrade *tupprv1alpha1.KubernetesUpgrade, phase, controllerNode, message string) error {
-	// Record phase change metrics
-	r.MetricsReporter.RecordKubernetesUpgradePhase(kubernetesUpgrade.Name, phase)
+    // Record phase change metrics
+    r.MetricsReporter.RecordKubernetesUpgradePhase(kubernetesUpgrade.Name, phase)
 
-	return r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
-		"phase":          phase,
-		"controllerNode": controllerNode,
-		"message":        message,
-	})
+    return r.updateStatus(ctx, kubernetesUpgrade, map[string]any{
+        "phase":          phase,
+        "controllerNode": controllerNode,
+        "message":        message,
+    })
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *KubernetesUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	logger := ctrl.Log.WithName("setup")
-	logger.Info("Setting up KubernetesUpgrade controller with manager")
+    logger := ctrl.Log.WithName("setup")
+    logger.Info("Setting up KubernetesUpgrade controller with manager")
 
-	r.HealthChecker = &HealthChecker{Client: mgr.GetClient()}
-	r.MetricsReporter = NewMetricsReporter()
+    r.HealthChecker = &HealthChecker{Client: mgr.GetClient()}
+    r.MetricsReporter = NewMetricsReporter()
 
-	talosClient, err := NewTalosClient(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to create talos client: %w", err)
-	}
-	r.TalosClient = talosClient
+    talosClient, err := NewTalosClient(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to create talos client: %w", err)
+    }
+    r.TalosClient = talosClient
 
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&tupprv1alpha1.KubernetesUpgrade{}).
-		Owns(&batchv1.Job{}).
-		Complete(r)
+    return ctrl.NewControllerManagedBy(mgr).
+        For(&tupprv1alpha1.KubernetesUpgrade{}).
+        Owns(&batchv1.Job{}).
+        Complete(r)
 }
