@@ -37,6 +37,10 @@ import (
 
 const daemonSetKind = "DaemonSet"
 
+// defaultDrainPollInterval is how often DrainNode retries pods that are still
+// blocked by a PodDisruptionBudget when no interval is configured.
+const defaultDrainPollInterval = 5 * time.Second
+
 // Drainer handles node drain operations
 type Drainer struct {
 	client  client.Client
@@ -103,26 +107,62 @@ type DrainOptions struct {
 	Timeout time.Duration
 	// GracePeriod is the grace period for pod termination
 	GracePeriod *int64
+	// PollInterval is how often to retry pods still blocked by a
+	// PodDisruptionBudget. Defaults to defaultDrainPollInterval when zero.
+	PollInterval time.Duration
 }
 
-// DrainNode evicts all pods from a node
+// DrainNode evicts all pods from a node.
+//
+// Eviction requests rejected by a PodDisruptionBudget (HTTP 429) are retried
+// until opts.Timeout elapses, mirroring `kubectl drain`: a PDB that is momentarily
+// at disruptionsAllowed=0 typically frees up once the other pods on the node
+// terminate, so a single failed eviction must not abort the whole drain. Other
+// eviction errors are returned immediately.
 func (d *Drainer) DrainNode(ctx context.Context, nodeName string, opts DrainOptions) error {
-	pods, err := d.getEvictablePods(ctx, nodeName)
-	if err != nil {
-		return fmt.Errorf("failed to list pods: %w", err)
+	pollInterval := opts.PollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultDrainPollInterval
 	}
 
-	if len(pods) == 0 {
-		return nil
-	}
+	// lastBlockErr holds the most recent PDB rejection so a timeout can report
+	// which pod was still blocking rather than a bare context error.
+	var lastBlockErr error
 
-	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
-
-	for _, pod := range pods {
-		if err := d.evictPod(ctx, &pod, opts); err != nil {
-			return fmt.Errorf("failed to evict pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	waitErr := wait.PollUntilContextTimeout(ctx, pollInterval, opts.Timeout, true, func(ctx context.Context) (bool, error) {
+		pods, err := d.getEvictablePods(ctx, nodeName)
+		if err != nil {
+			return false, fmt.Errorf("failed to list pods: %w", err)
 		}
+		if len(pods) == 0 {
+			return true, nil
+		}
+
+		lastBlockErr = nil
+		blocked := false
+		for i := range pods {
+			pod := pods[i]
+			if err := d.evictPod(ctx, &pod, opts); err != nil {
+				// A PDB rejection is transient: evicting the remaining pods may
+				// free disruption budget. Remember it and keep polling.
+				if apierrors.IsTooManyRequests(err) {
+					lastBlockErr = fmt.Errorf("failed to evict pod %s/%s: %w", pod.Namespace, pod.Name, err)
+					blocked = true
+					continue
+				}
+				return false, fmt.Errorf("failed to evict pod %s/%s: %w", pod.Namespace, pod.Name, err)
+			}
+		}
+
+		// Not done while any pod is still blocked by its PDB.
+		return !blocked, nil
+	})
+
+	if waitErr != nil {
+		if lastBlockErr != nil {
+			return fmt.Errorf("timed out draining node %s: %w", nodeName, lastBlockErr)
+		}
+		return waitErr
 	}
 
 	return nil

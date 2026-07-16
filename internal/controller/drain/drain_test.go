@@ -2,17 +2,21 @@ package drain
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const testDsName = "test-ds"
@@ -534,5 +538,110 @@ func TestDrainOptions(t *testing.T) {
 
 	if opts.GracePeriod == nil || *opts.GracePeriod != 30 {
 		t.Fatal("expected grace period 30")
+	}
+}
+
+// pdbBlockingEviction returns an interceptor that rejects the first failTimes
+// eviction requests with a 429 (PDB violation) and succeeds afterwards. It
+// records the number of eviction attempts in attempts.
+func pdbBlockingEviction(failTimes int, attempts *int) interceptor.Funcs {
+	return interceptor.Funcs{
+		SubResourceCreate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
+			if subResourceName != "eviction" {
+				return c.SubResource(subResourceName).Create(ctx, obj, subResource, opts...)
+			}
+			*attempts++
+			if *attempts <= failTimes {
+				return apierrors.NewTooManyRequests("Cannot evict pod as it would violate the pod's disruption budget.", 0)
+			}
+			return nil
+		},
+	}
+}
+
+// TestDrainNode_RetriesPDBBlockedEviction verifies that a PDB rejection is
+// retried until the pod can be evicted, rather than aborting the drain on the
+// first 429.
+func TestDrainNode_RetriesPDBBlockedEviction(t *testing.T) {
+	scheme := newTestScheme()
+	pod := newPod("blocked-pod", "default", "node-a", corev1.PodRunning, nil, nil)
+
+	attempts := 0
+	cl := nodeNameIndex(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(pod).
+		WithInterceptorFuncs(pdbBlockingEviction(2, &attempts)).
+		Build()
+
+	d := NewDrainer(cl)
+	err := d.DrainNode(context.Background(), "node-a", DrainOptions{
+		RespectPDBs:  true,
+		Timeout:      5 * time.Second,
+		PollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("DrainNode() error = %v, want nil after retries", err)
+	}
+	if attempts < 3 {
+		t.Fatalf("expected eviction to be retried until it succeeded (>=3 attempts), got %d", attempts)
+	}
+}
+
+// TestDrainNode_TimesOutOnPermanentPDB verifies that a PDB that never frees up
+// makes DrainNode fail with a timeout that names the blocking pod, instead of
+// returning a bare context error.
+func TestDrainNode_TimesOutOnPermanentPDB(t *testing.T) {
+	scheme := newTestScheme()
+	pod := newPod("stuck-pod", "default", "node-a", corev1.PodRunning, nil, nil)
+
+	attempts := 0
+	cl := nodeNameIndex(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(pod).
+		WithInterceptorFuncs(pdbBlockingEviction(1_000_000, &attempts)).
+		Build()
+
+	d := NewDrainer(cl)
+	err := d.DrainNode(context.Background(), "node-a", DrainOptions{
+		RespectPDBs:  true,
+		Timeout:      100 * time.Millisecond,
+		PollInterval: 10 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected DrainNode() to time out on a permanently blocked PDB, got nil")
+	}
+	if !strings.Contains(err.Error(), "stuck-pod") {
+		t.Fatalf("expected timeout error to name the blocking pod, got %v", err)
+	}
+	if attempts < 2 {
+		t.Fatalf("expected multiple eviction attempts before timeout, got %d", attempts)
+	}
+}
+
+// TestDrainNode_DisableEvictionBypassesPDB verifies that with RespectPDBs=false
+// a PDB rejection falls back to delete immediately, without waiting.
+func TestDrainNode_DisableEvictionBypassesPDB(t *testing.T) {
+	scheme := newTestScheme()
+	pod := newPod("force-pod", "default", "node-a", corev1.PodRunning, nil, nil)
+
+	attempts := 0
+	cl := nodeNameIndex(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(pod).
+		WithInterceptorFuncs(pdbBlockingEviction(1_000_000, &attempts)).
+		Build()
+
+	d := NewDrainer(cl)
+	err := d.DrainNode(context.Background(), "node-a", DrainOptions{
+		RespectPDBs:  false,
+		Timeout:      5 * time.Second,
+		PollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("DrainNode() with RespectPDBs=false error = %v, want nil", err)
+	}
+
+	// The pod should have been force-deleted rather than left in place.
+	remaining := &corev1.Pod{}
+	getErr := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "force-pod"}, remaining)
+	if getErr == nil {
+		t.Fatal("expected force-pod to be deleted when eviction is disabled")
 	}
 }
